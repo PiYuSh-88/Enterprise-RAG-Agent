@@ -30,9 +30,10 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings, get_settings
 from app.main import create_app
+from app.schemas.chunk import IndexDocumentResponse
 from app.schemas.document import DocumentResponse
 from app.services.document_service import DocumentService
-from app.routers.documents import get_document_service
+from app.routers.documents import get_document_service, get_indexing_service
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -316,3 +317,56 @@ class TestGetDocumentEndpoint:
 
         response = client.get(f"/documents/{uuid.uuid4()}")
         assert response.status_code == 404
+
+
+class TestIndexDocumentEndpoint:
+    """Unit tests for POST /documents/{doc_id}/index endpoint."""
+
+    def test_index_document_success_returns_200(self, test_settings):
+        doc_id = uuid.uuid4()
+        mock_indexing = MagicMock()
+        mock_indexing.index_document = AsyncMock(
+            return_value=IndexDocumentResponse(
+                document_id=doc_id,
+                status="indexed",
+                chunks_indexed=3,
+            )
+        )
+
+        app = create_app()
+        app.dependency_overrides[get_settings] = lambda: test_settings
+        app.dependency_overrides[get_indexing_service] = lambda: mock_indexing
+        app.state.db_engine = MagicMock()
+        app.state.db_session_factory = MagicMock()
+        app.state.vector_repository = MagicMock()
+
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post(f"/documents/{doc_id}/index")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["document_id"] == str(doc_id)
+        assert data["status"] == "indexed"
+        assert data["chunks_indexed"] == 3
+
+    def test_index_document_404_when_missing(self, test_settings):
+        doc_id = uuid.uuid4()
+        mock_indexing = MagicMock()
+        from fastapi import HTTPException
+        mock_indexing.index_document = AsyncMock(
+            side_effect=HTTPException(status_code=404, detail="Document not found.")
+        )
+
+        app = create_app()
+        app.dependency_overrides[get_settings] = lambda: test_settings
+        app.dependency_overrides[get_indexing_service] = lambda: mock_indexing
+        app.state.db_engine = MagicMock()
+        app.state.db_session_factory = MagicMock()
+        app.state.vector_repository = MagicMock()
+
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post(f"/documents/{doc_id}/index")
+
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Document not found."
+

@@ -31,16 +31,21 @@ from docx import Document as DocxDocument
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
 from pypdf import PdfWriter
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.database import Base, build_session_factory, get_db
 from app.main import create_app
+from app.repositories.vector_repository import QdrantVectorRepository, build_qdrant_client
+from app.routers.documents import get_embedding_service
+from app.services.embedding_service import DeterministicTestEmbeddingService
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 TEST_DB_NAME = "smartpark_test"
+TEST_COLLECTION_NAME = "rag_documents_test"
 
 # asyncpg DSN from asyncpg URL: strip the SQLAlchemy dialect prefix
 _ASYNCPG_URL_RE = re.compile(r"postgresql\+asyncpg://(.+)")
@@ -206,3 +211,82 @@ def corrupt_pdf_bytes() -> bytes:
 def corrupt_docx_bytes() -> bytes:
     """Random bytes — not a valid ZIP/DOCX — triggers extraction 422."""
     return b"this is definitely not a docx file"
+
+
+# ── Qdrant & Indexing fixtures ────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture()
+async def qdrant_client() -> AsyncGenerator[AsyncQdrantClient, None]:
+    """Fresh AsyncQdrantClient pointing to the running Qdrant container."""
+    settings = get_settings()
+    client = build_qdrant_client(settings)
+    yield client
+    await client.close()
+
+
+@pytest_asyncio.fixture()
+async def vector_repo(qdrant_client) -> QdrantVectorRepository:
+    """QdrantVectorRepository backed by the real test Qdrant container."""
+    return QdrantVectorRepository(qdrant_client)
+
+
+@pytest_asyncio.fixture()
+async def clean_test_collection(qdrant_client) -> AsyncGenerator[str, None]:
+    """Ensure test collection is clean before and dropped after test."""
+    if await qdrant_client.collection_exists(TEST_COLLECTION_NAME):
+        await qdrant_client.delete_collection(TEST_COLLECTION_NAME)
+    yield TEST_COLLECTION_NAME
+    if await qdrant_client.collection_exists(TEST_COLLECTION_NAME):
+        await qdrant_client.delete_collection(TEST_COLLECTION_NAME)
+
+
+@pytest_asyncio.fixture()
+async def indexing_integration_client(
+    test_engine,
+    test_session_factory,
+    qdrant_client,
+    vector_repo,
+    clean_test_collection,
+) -> AsyncGenerator[AsyncClient, None]:
+    """
+    Client wired to isolated smartpark_test database and real Qdrant test collection,
+    using DeterministicTestEmbeddingService for 100% offline, reproducible testing.
+    """
+    app = create_app()
+
+    app.state.db_engine = test_engine
+    app.state.db_session_factory = test_session_factory
+    app.state.qdrant_client = qdrant_client
+    app.state.vector_repository = vector_repo
+
+    async def _test_get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
+        async with test_session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    def _test_settings() -> Settings:
+        s = get_settings()
+        return Settings(
+            **{
+                **s.model_dump(),
+                "qdrant_collection_name": TEST_COLLECTION_NAME,
+            }
+        )
+
+    app.dependency_overrides[get_db] = _test_get_db
+    app.dependency_overrides[get_settings] = _test_settings
+    app.dependency_overrides[get_embedding_service] = lambda: DeterministicTestEmbeddingService(
+        dimensions=1536
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+    app.dependency_overrides.clear()
+

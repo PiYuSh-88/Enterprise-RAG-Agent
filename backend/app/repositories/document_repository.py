@@ -62,3 +62,21 @@ class DocumentRepository:
             select(Document).where(Document.id == doc_id)
         )
         return result.scalar_one_or_none()
+
+    async def update_status(self, doc_id: uuid.UUID, status: str) -> Document | None:
+        """
+        Update the status of an existing document.
+
+        Returns the updated Document or None if doc_id not found.
+        Commits changes immediately so lifecycle transitions (e.g. 'indexing', 'error')
+        persist even if downstream exceptions raise HTTPException.
+        """
+        doc = await self.get_by_id(doc_id)
+        if doc is None:
+            return None
+        doc.status = status
+        await self._session.commit()
+        await self._session.refresh(doc)
+        return doc
+
+

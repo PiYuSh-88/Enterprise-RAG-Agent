@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import Base  # noqa: E402
+import app.models  # noqa: E402, F401 — registers all ORM models on Base.metadata
+
 
 # ── Alembic config object ─────────────────────────────────────────────────────
 config = context.config

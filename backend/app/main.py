@@ -35,6 +35,7 @@ from app.repositories.vector_repository import (
     build_qdrant_client,
 )
 from app.routers import health as health_router
+from app.routers import documents as documents_router
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def create_app() -> FastAPI:
 
     # ── Routers ────────────────────────────────────────────────────────────────
     app.include_router(health_router.router)
-    # Phase 1+: add document, chat, agent routers here
+    app.include_router(documents_router.router)  # Milestone 1: document ingestion
 
     return app
 

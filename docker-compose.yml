@@ -1,0 +1,58 @@
+# docker-compose.yml
+# ------------------
+# Development-only compose file: PostgreSQL + Qdrant.
+#
+# NOT included (deferred to later phases per NOTES.md):
+#   Redis, Celery, Prometheus, Grafana, the FastAPI app itself.
+#
+# Usage:
+#   docker compose up -d            # start containers
+#   docker compose down             # stop containers
+#   docker compose down -v          # stop and delete volumes (wipes data)
+#
+# Environment variables are read from .env (gitignored).
+# The postgres service uses the same credentials configured in .env so
+# DATABASE_URL in .env points at this container without changes.
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ragdb_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ragdb}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword123}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ragdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ragdb_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"      # REST / gRPC HTTP
+      - "6334:6334"                       # gRPC (reserved for future use)
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local
